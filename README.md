@@ -5,5 +5,6 @@ This repository contains the data and code to accompany "Improving Recombinant A
 This Repository includes:
 Proteomic analysis of the FcBAR proteomic dataset in R using the DEP package.
 Transcriptomic analysis of the rituximab RNA-Seq dataset in R. 
-Datasets
+
+Datasets:
 The FcBar and RNA-Seq file used to perform the analysis is included in this repository.
