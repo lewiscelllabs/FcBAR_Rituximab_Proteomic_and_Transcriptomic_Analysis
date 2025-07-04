@@ -1,0 +1,453 @@
+---
+title: "FcBAR_Rituximab_Preprocessing_and_Analyzing"
+format: html
+editor: visual
+---
+
+#Performing FcBAr rituximab preprocessing using the DEP package in R to perform normalization (VSN) and imputation. Then the list of proteins in the producers only and significant in ctrl was used to perform Welch's t-test to compare the high producer against the low producer cell lines. 
+
+```{r}
+library(DEP)
+library("dplyr")
+library(tidyverse)
+```
+
+```{r}
+data <- read.csv ("proteinGroups_raw.csv")
+head(data)
+dim (data)
+View(data)
+```
+
+#remove samples E7 and B5
+```{r}
+# Remove columns with the headers for E7 and B5
+# Remove columns with base R
+data_rm <- data[, !colnames(data) %in% c('LFQ.intensity.B5_R1', 'LFQ.intensity.B5_R2', 'LFQ.intensity.B5_R3', 
+                                           'LFQ.intensity.E7_R1', 'LFQ.intensity.E7_R2', 'LFQ.intensity.E7_R3')]
+
+colnames(data_rm)
+
+```
+
+
+```{r}
+# We filter for contaminant proteins and decoy database hits, which are indicated by "+" in the columns "Potential.contaminants" and "Reverse", respectively.
+data_rm <- filter(data_rm, Reverse != "+", Potential.contaminant != "+")
+dim(data_rm)
+colnames(data_rm)
+#The “LFQ.intensity” columns will be used for subsequent analysis.
+```
+
+
+```{r}
+# Are there any duplicated protein.IDs names?
+data_rm$Majority.protein.IDs %>% duplicated() %>% any()
+```
+
+```{r}
+# Make a table of duplicated gene names
+data_rm %>% group_by(Majority.protein.IDs) %>% summarize(frequency = n()) %>% 
+  arrange(desc(frequency)) %>% filter(frequency > 1)
+```
+
+```{r}
+# Make unique names using the annotation in the "Majority.protein.IDs" column as primary names and the annotation in "Protein.IDs" as name for those that do not have an gene name.
+data_unique <- make_unique(data_rm, "Majority.protein.IDs", "Majority.protein.IDs", delim = ";")
+
+View(data_unique)
+```
+
+```{r}
+data_unique <- filter(data_unique, Reverse != "+", Potential.contaminant != "+", Only.identified.by.site != "+", Q.value != "NA")
+
+dim(data_unique)
+
+```
+
+```{r}
+# Are there any duplicated IDs?
+data_unique$Majority.protein.IDs %>% duplicated() %>% any()
+```
+
+```{r}
+# Generate a SummarizedExperiment object using an experimental design
+LFQ_columns <- grep("LFQ.", colnames(data_unique)) # get LFQ column numbers
+LFQ_columns
+experimental_design <- read.csv("Rit_SummarizedExperiment_RME7andB5.csv")
+data_se <- make_se(data_unique, LFQ_columns, experimental_design)
+
+# Generate a SummarizedExperiment object using an experimental design
+LFQ_columns <- grep("LFQ.", colnames(data_unique)) # get LFQ column numbers
+data_se_parsed <- make_se_parse(data_unique, LFQ_columns)
+
+data_se
+```
+
+```{r}
+# Normalize the data
+data_norm <- normalize_vsn(data_se)
+```
+
+```{r}
+# Visualize normalization by boxplots for all samples after normalization
+plot_normalization( data_norm)
+```
+
+```{r}
+# Plot PCA for the normalized data
+plot_pca(data_norm, label = TRUE, n = 2)
+```
+
+```{r}
+data_norm_df <- get_df_wide(data_norm)
+data_norm_df <- data_norm_df[,1:30]
+View(data_norm_df)
+```
+
+```{r}
+#write.csv(data_norm_df, file = "NOrmalized_data.csv", row.names = TRUE)
+```
+
+#read the normalize_data.csv file that has been added with count missing columns, status in producer, and status in nonproducer. 
+
+```{r}
+data_norm_filt <- read.csv("Normalized_data_filtered.csv")
+View(data_norm_filt)
+```
+
+#read csv file of the Summarized Experiment
+
+```{r}
+experimental_design_norm_filt <- read.csv("Rit_Norm_filtered_SummarizedExperiment_RME7andB5.csv")
+experimental_design_norm_filt
+```
+
+```{r}
+# Make unique names using the annotation in the "Majority.protein.IDs" column as primary names and the annotation in "Protein.IDs" as name for those that do not have an gene name.
+data_unique_filt <- make_unique(data_norm_filt, "Majority.protein.IDs", "Majority.protein.IDs", delim = ";")
+
+# Are there any duplicated names?
+data_norm_filt$name %>% duplicated() %>% any()
+```
+
+```{r}
+# Correct the grep pattern by replacing commas with the OR symbol (|)
+sample_columns <- grep("A4_1|A4_2|A4_3|A6_1|A6_2|A6_3|B2_1|B2_2|B2_3|E10_1|E10_2|E10_3|E6_1|E6_2|E6_3|E9_1|E9_2|E9_3|F1_1|F1_2|F1_3|G12_1|G12_2|G12_3|ctrl_1|ctrl_2|ctrl_3", colnames(data_norm_filt))
+
+# Output the column indices that match the pattern
+print(sample_columns)
+
+sample_columns
+data_norm_filt_se <- make_se(data_unique_filt, sample_columns, experimental_design_norm_filt)
+plot_missval(data_norm_filt_se)
+```
+
+```{r}
+# Plot intensity distributions and cumulative fraction of proteins with and without missing values
+plot_detect(data_norm_filt_se)
+```
+
+#Impute missing values using manually defined left-shifted Gaussian districution (for MNAR)
+```{r}
+# Impute missing data using random draws from a manually defined left-shifted Gaussian distribution (for MNAR)
+data_imp_man <- impute(data_norm_filt_se, fun = "man", shift = 1.8, scale = 0.3)
+
+```
+
+```{r}
+# Plot intensity distributions before and after imputation
+plot_imputation(data_norm_filt_se, data_imp_man)
+```
+
+```{r}
+# Load the SummarizedExperiment package
+library(SummarizedExperiment)
+
+# Convert imputed data to a data frame
+imputed_data_df <- as.data.frame(assay(data_imp_man))
+dim(imputed_data_df)
+
+# Write to CSV
+#write.csv(imputed_data_df, "Rituximab_MS_imputed_data.csv", row.names = TRUE)
+
+```
+
+Differential enrichment analysis
+
+```{r}
+# Differential enrichment analysis  based on linear models and empherical Bayes statistics
+
+# Test every sample versus control
+data_diff <- test_diff(data_imp_man, type = "control", control = "ctrl")
+```
+
+```{r}
+#Finally, significant proteins are defined by user-defined cutoffs using add_rejections.
+
+# Denote significant proteins based on user defined cutoffs
+dep <- add_rejections(data_diff, alpha = 0.05, lfc = log2(1.5))
+```
+
+```{r}
+df_wide <-get_df_wide(dep)
+View(df_wide)
+dim(df_wide)
+```
+
+# filter for pvalues only that are in the control; not in the control
+
+```{r}
+
+# Identify columns that end with  'pvalue'
+filtered_columns_pval <- grep("p\\.val$", colnames(df_wide), value = TRUE)
+
+# Combine the first column with filtered columns
+all_selected_columns_pval <- c(first_col, filtered_columns_pval)
+
+# Subset the data frame
+df_filtered_pval <- df_wide[, all_selected_columns_pval]
+
+# Print the filtered data frame
+View(df_filtered_pval)
+dim(df_filtered_pval)
+
+```
+
+```{r}
+
+# Merge df_filtered with data_norm_filt based on the common identifier column
+combined_df_pval <- merge(df_filtered_pval, data_norm_filt, by = "name")
+combined_df_pval
+
+combined_df_filtered_pval<- combined_df_pval[,c(1:9,47:50)]
+
+View(combined_df_filtered_pval)
+
+
+```
+
+```{r}
+ # Filter rows where 'status.in.control' is 'NOT in nonprod'
+not_in_ctrl_df_pval <-combined_df_filtered_pval[combined_df_filtered_pval$status.in.control == "NOT IN NONPROD", ]
+
+# Print the filtered data frame
+View(not_in_ctrl_df_pval )
+dim(not_in_ctrl_df_pval)
+```
+
+#filtered for the proteins that are in the ctrl and are significantly different
+
+```{r}
+ # Filter rows where 'status.in.control' is 'nonprod'
+in_ctrl_df_pval <-combined_df_filtered_pval[combined_df_filtered_pval$status.in.control == "DETECTED IN NONPROD", ]
+
+# Print the filtered data frame
+View(in_ctrl_df_pval )
+dim(in_ctrl_df_pval)
+#write.csv(in_ctrl_df_pval, "Rituximab_inctrl_df_pval_07032025.csv")
+
+```
+
+```{r}
+# Filter rows where values in columns 2 to 9 are less than 0.05
+# Create a logical vector to identify rows meeting the criteria
+rows_to_keep_2 <- apply(in_ctrl_df_pval[, 2:9], 1, function(row) all(row < 0.05))
+
+# Subset the data frame based on the logical vector
+in_ctrl_0.05_pval <- as.data.frame(in_ctrl_df_pval[rows_to_keep_2, ])
+head(in_ctrl_0.05_pval)
+
+# Print the filtered data frame
+View(in_ctrl_0.05_pval)
+dim(in_ctrl_0.05_pval)
+```
+
+###merge the not_in_ctrl dataframe with the in_ctrl_0.05_pval dataframe
+
+```{r}
+
+bind_not_in_ctrl_0.05_pval <- rbind(not_in_ctrl_df_pval, in_ctrl_0.05_pval)
+
+
+View(bind_not_in_ctrl_0.05_pval)
+dim(bind_not_in_ctrl_0.05_pval)
+```
+
+## PPIs that are not in control, and if it's in control, it's significant (pval \< 0.05)
+
+```{r}
+# Write the data frame to a CSV file
+#write.csv(bind_not_in_ctrl_0.05_pval, file = "MS_ritux_notinctrl_siginpro.csv", row.names = FALSE)
+```
+
+##Perform welch T-test of high vs low producer cell lines using the curated list of merge the not_in_ctrl dataframe with the in_ctrl_0.05_pval
+
+```{r}
+View(df_wide)
+dim(df_wide)
+filtered_df <- df_wide[df_wide$name %in% bind_not_in_ctrl_0.05_pval$name, ]
+dim(filtered_df)
+view(filtered_df)
+#write.csv(filtered_df, "PPI_inproducers_siginctrl_list_07022025.csv")
+```
+
+```{r}
+# Extract the columns corresponding to high producer groups
+high_producer<- filtered_df[,c(2:7,11:16, 20:22)]
+
+
+# Extract the columns corresponding to low producer groups
+low_producer<- filtered_df[, c(8:10, 17:19, 23:25)]
+
+
+head(high_producer)
+head(low_producer)
+
+# Merge the data frames together
+combined_df <- cbind(high_producer, low_producer)
+
+#add the genes to the combined high and low producer 
+
+combined_df<- data.frame (name = filtered_df$name, high_producer, low_producer)
+dim(combined_df)
+view(combined_df)
+
+#write.csv(combined_df, "combined_df_organize_highandlowproducers_rituximab_05172025.csv")
+
+```
+
+```{r}
+# Perform Welch's t-test between high and low producer groups for each protein
+welch_test_results<- lapply(1:nrow(filtered_df), function(i) {
+  t.test(high_producer[i, ], low_producer[i, ], var.equal = FALSE, na.rm = TRUE)
+})
+
+# Extract p-values from the test results
+p_values<- sapply(welch_test_results, function(result_rep) result_rep$p.value)
+
+# Print the p-values
+print(p_values)
+```
+
+```{r}
+# Create a new dataframe to the filtered_df and p-values
+protein_p_values<- data.frame( filtered_df, p_value = p_values)
+
+# Print the dataframe
+print(protein_p_values)
+
+```
+
+```{r}
+#Log2 the data, calculate the mean for each gene per group. Then calculate the fold change between the groups (high producer vs low producer)
+
+high_log_transform <- log2(high_producer)
+low_log_transform <- log2(low_producer)
+head(high_log_transform)
+head(low_log_transform)
+
+```
+
+```{r}
+# Calculate the mean for each gene in high producer group 
+high_producer_mean <- rowMeans(high_log_transform, na.rm = TRUE)
+
+# Calculate the mean for each gene in low producer group 
+low_producer_mean <- rowMeans(low_log_transform, na.rm = TRUE)
+
+# Calculate the fold change (high producer mean - low producer mean)
+log2_fold_change <- high_producer_mean - low_producer_mean
+
+
+# Create a data frame with the results
+results_high_vs_low <- data.frame(protein_p_values,
+  High_Producer_Mean = high_producer_mean,
+  Low_Producer_Mean = low_producer_mean,
+  log2_Fold_Change = log2_fold_change
+  
+)
+
+# Print the results
+print(head(results_high_vs_low))
+
+```
+
+```{r}
+View(results_high_vs_low)
+dim(results_high_vs_low)
+#write.csv(results_high_vs_low, "highvslow_Rituximab_withinproducernotctrllist_log2FC_unfiltered_07022025.csv")
+```
+
+#Filter for log2 Fold Change \<0 and pvalue \<0.05.
+
+```{r}
+#  Subset the data for log2 fold change <0 and pval <0.05
+results_high_vs_low_pval_0.05_logFCless0 <- subset(results_high_vs_low, log2_Fold_Change < 0 & p_value < 0.05)
+
+# View the subsetted data
+results_high_vs_low_pval_0.05_logFCless0
+
+# Get the dimensions of the subsetted data
+dim(results_high_vs_low_pval_0.05_logFCless0)
+View(results_high_vs_low_pval_0.05_logFCless0)
+
+
+```
+
+```{r}
+# Subset the data for log2 fold change >0 and pval <0.05
+results_high_vs_low_pval_0.05_logFCgreater0 <- subset(results_high_vs_low, log2_Fold_Change > 0 & p_value < 0.05)
+
+# View the subsetted data
+results_high_vs_low_pval_0.05_logFCgreater0
+
+# Get the dimensions of the subsetted data
+dim(results_high_vs_low_pval_0.05_logFCgreater0)
+
+```
+
+```{r}
+#write.csv(results_high_vs_low_pval_0.05_logFCgreater0, "Rituximab_MS__actual_log2FC_Upregualtedin_High_producers_05192025.csv")
+#write.csv(results_high_vs_low_pval_0.05_logFCless0, "Rituximab_MS_actual_log2FC_Upregualtedin_low_producers_05192025.csv")
+```
+
+# visualize with volcano plot of the fold change greater than 0 and less than 0.
+
+```{r}
+# Load the necessary libraries
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# Set significance thresholds
+significance_threshold <- 0.05
+fold_change_threshold <- 0  # Adjust based on your study needs
+
+# Add a column to indicate significant proteins based on the p-values
+results_high_vs_low$Significant <- with(results_high_vs_low, 
+                                         ifelse(p_value < significance_threshold & 
+                                                abs(log2_Fold_Change) > fold_change_threshold, 
+                                                "Significant", "Not Significant"))
+
+# Select the top 10 proteins based on absolute fold change and p-value
+top_proteins <- results_high_vs_low %>%
+  filter(p_values < significance_threshold) %>%  # Keep only significant proteins
+  arrange(desc(abs(log2_Fold_Change)), p_value) %>%  # Sort by highest fold change, then lowest p-value
+  slice_head(n = 6)  # Select top 10 proteins (adjust as needed)
+
+# Create the volcano plot using raw p-values
+ggplot(results_high_vs_low, aes(x = log2_Fold_Change, y = -log10(p_value))) +
+  geom_point(aes(color = Significant), alpha = 0.6, size = 2) +
+  scale_color_manual(values = c("Not Significant" = "grey")) +  # Default color for significant points
+  labs(title = "PPIs: High Producer vs Low Producer of Rituximab", 
+       x = "Log2 Fold Change", 
+       y = "-Log10 P-Value") +
+  theme_minimal() +
+  theme(legend.title = element_blank()) +
+  geom_text_repel(data = top_proteins, aes(label = name), color = "blue", size = 3, max.overlaps = 10) +  # Label top proteins in blue
+  geom_point(data = results_high_vs_low %>% filter(Significant == "Significant" & log2_Fold_Change > 0), color = "red", size = 2) +  # Upregulated in red
+  geom_point(data = results_high_vs_low %>% filter(Significant == "Significant" & log2_Fold_Change < 0), color = "blue", size = 2)  # Downregulated in blue
+
+```
+

@@ -1,0 +1,176 @@
+---
+title: "FcBAR_Rituximab_Linear_Regression"
+format: html
+editor: visual
+---
+
+#The list of proteins in the producers only and significant in ctrl was used used to perform linear regression analysis of the protein abundance against the productivity (pg/cell/day). 
+
+#load file containing the list of proteins in the producer only, and if its in crtl, its significant (p < 0.05). 
+
+```{r}
+rit_prod<- read.csv ("Rituximab_productivity.csv")
+PPI_inproducer_list<-read.csv( "PPI_inproducers_siginctrl_list_07022025.csv")
+view(rit_prod)
+view(PPI_inproducer_list)
+dim(PPI_inproducer_list)
+```
+
+```{r}
+colnames(rit_prod)
+colnames(PPI_inproducer_list)
+```
+
+```{r}
+#not including ctrl here. Just the high and low producers
+proteomics_aggregated <- PPI_inproducer_list %>%
+  pivot_longer(cols = c("A4_1", "A4_2", "A4_3", 
+                        "A6_1", "A6_2", "A6_3",
+                        "B2_1", "B2_2", "B2_3",
+                        "E10_1", "E10_2", "E10_3",
+                        "E6_1", "E6_2", "E6_3",
+                        "E9_1", "E9_2", "E9_3",
+                        "F1_1", "F1_2", "F1_3",
+                        "G12_1", "G12_2", "G12_3"),
+               names_to = "Sample_Replicate", 
+               values_to = "expression") %>%
+  separate(Sample_Replicate, into = c("Sample", "Replicate"), sep = "_") %>%
+  group_by(name, Sample) %>%
+  summarise(mean_expression = mean(expression, na.rm = TRUE)) %>%
+  ungroup()
+
+# Check aggregated data
+head(proteomics_aggregated)
+view(proteomics_aggregated)
+```
+
+```{r}
+# Merge with productivity data
+merged_data <- proteomics_aggregated %>%
+  left_join(rit_prod, by = "Sample")
+
+# Check merged data
+head(merged_data)
+view(merged_data)
+```
+
+```{r}
+library(dplyr)
+
+# Clean and scale data
+merged_data_clean <- merged_data %>%
+  filter(!is.na(pg.cell.day), !is.na(mean_expression)) %>%
+  mutate(mean_expression_scaled = as.numeric(scale(mean_expression)))  # Avoid matrix class
+
+# Fit models with *one* lm() and *one* summary() call per protein
+protein_regressions <- merged_data_clean %>%
+  group_by(name) %>%
+  summarise(
+    model = list(lm(pg.cell.day ~ mean_expression_scaled)),
+    model_summary = list(summary(model[[1]])),
+    slope = coef(model[[1]])[2],
+    slope_se = model_summary[[1]]$coefficients[2, 2],
+    p_value = model_summary[[1]]$coefficients[2, 4],
+    r_squared = model_summary[[1]]$r.squared,
+    adj_r_squared = model_summary[[1]]$adj.r.squared,
+    .groups = "drop"
+  ) %>%
+  dplyr::select(-model, -model_summary)
+
+# Filter significant proteins
+significant_proteins <- protein_regressions %>%
+  filter(p_value < 0.19) %>%
+  arrange(p_value)
+#write.csv(significant_proteins, file = "Linear_regression_Rituximab_pval_rsquared_07022025.csv", row.names = FALSE)
+
+```
+
+```{r}
+library(dplyr)
+
+# Assuming 'protein_regressions' already exists from your linear regression code
+significant_proteins <- protein_regressions %>%
+  filter(p_value < 0.05)
+
+# Split into positive and negative slopes
+upregulated <- significant_proteins %>%
+  filter(slope > 0) %>%
+  arrange(p_value)
+
+downregulated <- significant_proteins %>%
+  filter(slope < 0) %>%
+  arrange(p_value)
+
+# View results
+View(upregulated)
+View(downregulated)
+
+# Save to CSV
+#write.csv(upregulated, "upregulated_proteins_p0.05.csv", row.names = FALSE)
+#write.csv(downregulated, "downregulated_proteins_p0.05.csv", row.names = FALSE)
+```
+
+#want to highlight the genes that was validated
+
+```{r}
+library(dplyr)
+library(stringr)
+
+# Extract the part after the last underscore
+protein_regressions <- protein_regressions %>%
+  mutate(name_clean = str_extract(name, "[^_]+$"))
+# Filter for pval <0.19 as some of the genes tested pval are not <0.05. 
+significant_proteins_rename <- protein_regressions %>%
+  filter(p_value < 0.19) %>%
+  arrange(p_value)
+
+# Check significant proteins
+head(significant_proteins_rename)
+view(significant_proteins_rename)
+```
+
+```{r}
+library(ggplot2)
+library(ggrepel)  # For better label placement
+
+# Create a volcano plot with cleaned labels
+protein_regressions %>%
+  ggplot(aes(x = slope, y = -log10(p_value))) +
+  geom_point(aes(color = ifelse(p_value < 0.05, "Significant", "Not Significant")), size = 3, alpha = 0.7) +  # Increase point size and transparency
+  geom_text_repel(
+    data = protein_regressions,  # Label significant proteins
+    aes(label = name_clean), 
+    size = 3, color = "black", box.padding = 0.5, max.overlaps = 20,  # Adjust label placement
+    segment.color = "gray", segment.size = 0.2  # Add connecting lines for labels
+  ) +
+  geom_point(
+    data = subset(protein_regressions, name_clean %in% c("LOC100774522", "LOC100758590", "Pgrmc1", "Agpat4", "Nsdhl", "Psme2", "Acsl4")),  # Highlight specific genes
+    aes(color = "Highlighted"), size = 4, shape = 17  # Use triangles for highlighted genes
+  ) +
+  geom_text_repel(
+    data = subset(protein_regressions, p_value < 0.19 & name_clean %in% c("LOC100774522", "LOC100758590", "Pgrmc1", "Agpat4", "Nsdhl", "Psme2", "Acsl4")),  # Label highlighted genes
+    aes(label = name_clean), 
+    size = 4, color = "blue", box.padding = 0.8, max.overlaps = Inf,  # Customize label appearance
+    segment.color = "blue", segment.size = 0.2  # Add connecting lines for labels
+  ) +
+  scale_color_manual(
+    values = c(
+      "Significant" = "red", 
+      "Not Significant" = "gray", 
+      "Highlighted" = "aquamarine"  # Color for highlighted genes
+    ),
+    breaks = c("Significant", "Not Significant", "Highlighted")  # Ensure legend includes all categories
+  ) +
+  theme_minimal(base_size = 14) +  # Increase base font size
+  labs(
+    x = "Slope (Effect Size)", 
+    y = "-log10(P-value)", 
+    title = "Volcano Plot: Protein Abundance vs. Productivity",
+    color = "Significance"
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +  # Significance threshold
+  theme(
+    legend.position = "bottom",  # Move legend to the bottom
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold")  # Center and bold the title
+  )
+```
