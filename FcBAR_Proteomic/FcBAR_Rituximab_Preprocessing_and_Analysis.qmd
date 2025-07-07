@@ -430,7 +430,7 @@ results_high_vs_low$Significant <- with(results_high_vs_low,
                                                 abs(log2_Fold_Change) > fold_change_threshold, 
                                                 "Significant", "Not Significant"))
 
-# Select the top 10 proteins based on absolute fold change and p-value
+# Select the top 6 proteins based on absolute fold change and p-value
 top_proteins <- results_high_vs_low %>%
   filter(p_values < significance_threshold) %>%  # Keep only significant proteins
   arrange(desc(abs(log2_Fold_Change)), p_value) %>%  # Sort by highest fold change, then lowest p-value
