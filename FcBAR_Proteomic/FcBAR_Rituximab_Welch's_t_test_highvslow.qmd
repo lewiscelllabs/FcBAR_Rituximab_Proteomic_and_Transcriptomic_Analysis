@@ -1,0 +1,169 @@
+---
+title: "Rituximab_FcBAR_Welch's_t_test"
+format: html
+editor: visual
+---
+#Filter for curated lists of proteins detected in producer and not in ctrl  (hit); and if its detected in ctrl, BH adjusted values > 0.05. Combine the two lists together to use for downstream analysis:  perform Welch's t-test 
+
+```{r}
+curated_list <- read.csv("Rituximab_Fc_BAR_curated_list_07072025.csv")
+```
+
+```{r}
+# Extract the columns corresponding to high producer groups
+high_producer<- curated_list[,c(2:7,11:16, 20:22)]
+
+
+# Extract the columns corresponding to low producer groups
+low_producer<- curated_list[, c(8:10, 17:19, 23:25)]
+
+
+head(high_producer)
+head(low_producer)
+
+# Merge the data frames together
+combined_df <- cbind(high_producer, low_producer)
+
+#add the genes to the combined high and low producer 
+
+combined_df<- data.frame (name = curated_list$name, high_producer, low_producer)
+dim(combined_df)
+view(combined_df)
+
+```
+```{r}
+# Perform Welch's t-test and calculate log2 fold changes
+results <- lapply(1:nrow(curated_list), function(i) {
+  # Convert rows to numeric vectors and remove NAs
+  x <- as.numeric(na.omit(high_producer[i, ]))
+  y <- as.numeric(na.omit(low_producer[i, ]))
+  
+  # Calculate means (add pseudocount to avoid log2(0))
+  mean_x <- mean(x, na.rm = TRUE)
+  mean_y <- mean(y, na.rm = TRUE)
+  
+  # Calculate log2 fold change (high vs low)
+  log2FC <- log2((mean_x + 1) / (mean_y + 1))  # Adding pseudocount of 1
+  
+  # Check for sufficient data and non-zero variance
+  if (length(x) < 2 || length(y) < 2 || (var(x) == 0 && var(y) == 0)) {
+    return(list(
+      p.value = NA,
+      statistic = NA,
+      log2FC = log2FC,
+      mean_high = mean_x,
+      mean_low = mean_y
+    ))
+  } else {
+    test_result <- t.test(x, y, var.equal = FALSE)
+    return(list(
+      p.value = test_result$p.value,
+      statistic = test_result$statistic,
+      log2FC = log2FC,
+      mean_high = mean_x,
+      mean_low = mean_y
+    ))
+  }
+})
+
+# Convert results to a data frame
+result_df <- data.frame(
+  Protein = curated_list$name,
+  P_value = sapply(results, function(x) x$p.value),
+  T_statistic = sapply(results, function(x) x$statistic),
+  Log2FC = sapply(results, function(x) x$log2FC),
+  Mean_high = sapply(results, function(x) x$mean_high),
+  Mean_low = sapply(results, function(x) x$mean_low),
+  stringsAsFactors = FALSE
+)
+
+
+# Print top results
+head(result_df)
+view(result_df)
+dim(result_df)
+```
+```{r}
+#write.csv(result_df, "FcBAR_Rituximab_Welch's_ttest_highvslow_withcurated_list_07072025.csv")
+```
+
+```{r}
+# Filter for significantly upregulated proteins (higher in high producers)
+upregulated <- result_df %>%
+  filter(Log2FC > 0, P_value < 0.05) %>%
+  arrange(desc(Log2FC))  # Sort by largest positive fold change
+
+# Filter for significantly downregulated proteins (higher in low producers)
+downregulated <- result_df %>%
+  filter(Log2FC < 0, P_value < 0.05) %>%
+  arrange(Log2FC)  # Sort by largest negative fold change
+
+# Print results
+cat("=== Upregulated proteins (High > Low) ===\n")
+print(head(upregulated))
+
+cat("\n=== Downregulated proteins (High < Low) ===\n")
+print(head(downregulated))
+
+dim(upregulated)
+dim(downregulated)
+
+```
+```{r}
+# Write to CSV
+#write.csv(upregulated, "upregulated_proteins_welch_ttest_rituximab_07072025.csv", row.names = FALSE)
+#write.csv(downregulated, "downregulated_proteins__welch_ttest_rituximab_07072025.csv", row.names = FALSE)
+
+```
+
+```{r}
+psme2<- result_df[grepl("_Psme2$", result_df$Protein), ]
+print(psme2)
+```
+```{r}
+# Extract gene name from protein ID
+result_df$ProteinLabel <- sub(".*_", "", result_df$Protein)
+result_df
+
+```
+
+
+```{r}
+# Load the necessary libraries
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# Set significance thresholds
+significance_threshold <- 0.05
+fold_change_threshold <- 0  # Adjust if needed
+
+# Add a column to indicate significant proteins based on the p-values and fold change
+result_df <- result_df %>%
+  mutate(Significant = ifelse(P_value < significance_threshold & abs(Log2FC) > fold_change_threshold,
+                              "Significant", "Not Significant"))
+
+# Select the top 10 significant proteins with highest |Log2FC| and lowest P-value
+top_proteins <- result_df %>%
+  filter(P_value < significance_threshold) %>%
+  arrange(desc(abs(Log2FC)), P_value) %>%
+  slice_head(n = 10)
+
+# Create the volcano plot
+ggplot(result_df, aes(x = Log2FC, y = -log10(P_value))) +
+  geom_point(aes(color = Significant), alpha = 0.6, size = 2) +
+  scale_color_manual(values = c("Significant" = "black", "Not Significant" = "grey")) +
+  labs(title = "PPIs: High Producer vs Low Producer of Rituximab", 
+       x = "Log2 Fold Change", 
+       y = "-Log10 P-Value") +
+  theme_minimal() +
+  theme(legend.title = element_blank()) +
+  geom_text_repel(data = top_proteins, aes(label = ProteinLabel), color = "blue", size = 3, max.overlaps = 10) +
+  # Add red and blue highlights for up- and downregulated proteins
+  geom_point(data = result_df %>% filter(Significant == "Significant" & Log2FC > 0),
+             aes(x = Log2FC, y = -log10(P_value)), color = "red", size = 2) +
+  geom_point(data = result_df %>% filter(Significant == "Significant" & Log2FC < 0),
+             aes(x = Log2FC, y = -log10(P_value)), color = "blue", size = 2)
+
+```
+

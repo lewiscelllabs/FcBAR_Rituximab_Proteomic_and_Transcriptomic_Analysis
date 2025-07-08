@@ -1,0 +1,205 @@
+---
+title: "FcBAR_Rituximab_Preprocessing_and_Analyzing"
+format: html
+editor: visual
+---
+
+#Performing FcBAr rituximab preprocessing using the DEP package in R to perform normalization (VSN) and imputation. Then the list of proteins in the producers only and significant in ctrl was used to perform Welch's t-test to compare the high producer against the low producer cell lines.
+
+```{r}
+library(DEP)
+library("dplyr")
+library(tidyverse)
+```
+
+```{r}
+data <- read.csv ("proteinGroups_raw.csv")
+head(data)
+dim (data)
+View(data)
+```
+
+#remove samples E7 and B5
+
+```{r}
+# Remove columns with the headers for E7 and B5
+# Remove columns with base R
+data_rm <- data[, !colnames(data) %in% c('LFQ.intensity.B5_R1', 'LFQ.intensity.B5_R2', 'LFQ.intensity.B5_R3', 
+                                           'LFQ.intensity.E7_R1', 'LFQ.intensity.E7_R2', 'LFQ.intensity.E7_R3')]
+
+colnames(data_rm)
+
+```
+
+```{r}
+# We filter for contaminant proteins and decoy database hits, which are indicated by "+" in the columns "Potential.contaminants" and "Reverse", respectively.
+data_rm <- filter(data_rm, Reverse != "+", Potential.contaminant != "+")
+dim(data_rm)
+colnames(data_rm)
+#The “LFQ.intensity” columns will be used for subsequent analysis.
+```
+
+```{r}
+# Are there any duplicated protein.IDs names?
+data_rm$Majority.protein.IDs %>% duplicated() %>% any()
+```
+
+```{r}
+# Make a table of duplicated gene names
+data_rm %>% group_by(Majority.protein.IDs) %>% summarize(frequency = n()) %>% 
+  arrange(desc(frequency)) %>% filter(frequency > 1)
+```
+
+```{r}
+# Make unique names using the annotation in the "Majority.protein.IDs" column as primary names and the annotation in "Protein.IDs" as name for those that do not have an gene name.
+data_unique <- make_unique(data_rm, "Majority.protein.IDs", "Majority.protein.IDs", delim = ";")
+
+View(data_unique)
+```
+
+```{r}
+data_unique <- filter(data_unique, Reverse != "+", Potential.contaminant != "+", Only.identified.by.site != "+", Q.value != "NA")
+
+dim(data_unique)
+
+```
+
+```{r}
+# Are there any duplicated IDs?
+data_unique$Majority.protein.IDs %>% duplicated() %>% any()
+```
+
+```{r}
+# Generate a SummarizedExperiment object using an experimental design
+LFQ_columns <- grep("LFQ.", colnames(data_unique)) # get LFQ column numbers
+LFQ_columns
+experimental_design <- read.csv("Rit_SummarizedExperiment_RME7andB5.csv")
+data_se <- make_se(data_unique, LFQ_columns, experimental_design)
+
+# Generate a SummarizedExperiment object using an experimental design
+LFQ_columns <- grep("LFQ.", colnames(data_unique)) # get LFQ column numbers
+data_se_parsed <- make_se_parse(data_unique, LFQ_columns)
+
+data_se
+```
+
+```{r}
+# Normalize the data
+data_norm <- normalize_vsn(data_se)
+```
+
+```{r}
+# Visualize normalization by boxplots for all samples after normalization
+plot_normalization( data_norm)
+```
+
+```{r}
+# Plot PCA for the normalized data
+plot_pca(data_norm, label = TRUE, n = 2)
+```
+
+```{r}
+data_norm_df <- get_df_wide(data_norm)
+data_norm_df <- data_norm_df[,1:30]
+View(data_norm_df)
+```
+
+```{r}
+#write.csv(data_norm_df, file = "NOrmalized_data.csv", row.names = TRUE)
+```
+
+#read the normalize_data.csv file that has been added with count missing columns, status in producer, and status in nonproducer.
+
+```{r}
+data_norm_filt <- read.csv("Normalized_data_filtered.csv")
+View(data_norm_filt)
+```
+
+#read csv file of the Summarized Experiment
+
+```{r}
+experimental_design_norm_filt <- read.csv("Rit_Norm_filtered_SummarizedExperiment_RME7andB5.csv")
+experimental_design_norm_filt
+```
+
+```{r}
+# Make unique names using the annotation in the "Majority.protein.IDs" column as primary names and the annotation in "Protein.IDs" as name for those that do not have an gene name.
+data_unique_filt <- make_unique(data_norm_filt, "Majority.protein.IDs", "Majority.protein.IDs", delim = ";")
+
+# Are there any duplicated names?
+data_norm_filt$name %>% duplicated() %>% any()
+```
+
+```{r}
+# Correct the grep pattern by replacing commas with the OR symbol (|)
+sample_columns <- grep("A4_1|A4_2|A4_3|A6_1|A6_2|A6_3|B2_1|B2_2|B2_3|E10_1|E10_2|E10_3|E6_1|E6_2|E6_3|E9_1|E9_2|E9_3|F1_1|F1_2|F1_3|G12_1|G12_2|G12_3|ctrl_1|ctrl_2|ctrl_3", colnames(data_norm_filt))
+
+# Output the column indices that match the pattern
+print(sample_columns)
+
+sample_columns
+data_norm_filt_se <- make_se(data_unique_filt, sample_columns, experimental_design_norm_filt)
+plot_missval(data_norm_filt_se)
+```
+
+```{r}
+# Plot intensity distributions and cumulative fraction of proteins with and without missing values
+plot_detect(data_norm_filt_se)
+```
+
+#Impute missing values using manually defined left-shifted Gaussian districution (for MNAR)
+
+```{r}
+# Impute missing data using random draws from a manually defined left-shifted Gaussian distribution (for MNAR)
+set.seed(1234) #ensure that results are reproducible
+data_imp_man <- impute(data_norm_filt_se, fun = "man", shift = 1.8, scale = 0.3)
+
+```
+
+```{r}
+# Plot intensity distributions before and after imputation
+plot_imputation(data_norm_filt_se, data_imp_man)
+```
+
+```{r}
+# Load the SummarizedExperiment package
+library(SummarizedExperiment)
+
+# Convert imputed data to a data frame
+imputed_data_df <- as.data.frame(assay(data_imp_man))
+dim(imputed_data_df)
+
+# Write to CSV
+#write.csv(imputed_data_df, "Rituximab_MS_imputed_data.csv", row.names = TRUE)
+
+```
+
+Differential enrichment analysis
+
+```{r}
+# Differential enrichment analysis  based on linear models and empherical Bayes statistics
+
+# Test every sample versus control
+data_diff <- test_diff(data_imp_man, type = "control", control = "ctrl")
+```
+
+```{r}
+#Finally, significant proteins are defined by user-defined cutoffs using add_rejections.
+
+# Denote significant proteins based on user defined cutoffs
+dep <- add_rejections(data_diff, alpha = 0.05, lfc = log2(1.5))
+```
+
+```{r}
+df_wide <-get_df_wide(dep)
+View(df_wide)
+dim(df_wide)
+```
+
+#Filter for curated lists of proteins detected in producer and not in ctrl  (hit); and if its detected in ctrl, BH adjusted values > 0.05. Combine the two lists together to use for downstream analysis:  perform Welch's t-test and linear regression analysis. 
+
+`
+
+
+
+
