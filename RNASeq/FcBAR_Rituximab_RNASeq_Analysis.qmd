@@ -294,7 +294,7 @@ fold_change_threshold <- 0  # Adjust this based on study criteria
 # Add a column to indicate significant genes based on thresholds using adjusted p-values
 results$Significant <- with(results, ifelse(P_value < significance_threshold & abs(log2_Fold_Change) > fold_change_threshold, "Significant", "Not Significant"))
 
-# Select the top 10 genes based on absolute fold change and  padj-values to highlight on the volcano plot
+# Select the top 7 genes based on absolute fold change and  padj-values (use this instead of pval to highlight some of the validated genes) to highlight on the volcano plot
 top_genes <- results %>%
   filter(padj < significance_threshold) %>%  # Keep only significant genes
   arrange(desc(abs(log2_Fold_Change)), padj) %>%  # Sort by highest fold change, then lowest padj
