@@ -300,7 +300,7 @@ top_genes <- results %>%
   arrange(desc(abs(log2_Fold_Change)), P_value) %>%  # Sort by highest fold change, then lowest pval
   slice_head(n = 7)  # Select top 10 genes
 
-# Create the volcano plot using adjusted p-values
+# Create the volcano plot using p-values
 ggplot(results, aes(x = log2_Fold_Change, y = -log10(P_value))) +
   geom_point(aes(color = Significant), alpha = 0.6, size = 2) +
   scale_color_manual(values = c("Not Significant" = "grey")) +
